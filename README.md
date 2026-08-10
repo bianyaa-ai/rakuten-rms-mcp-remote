@@ -48,10 +48,11 @@ npm start
 | `GET /health` | 存活確認 |
 | `GET /.well-known/oauth-authorization-server` | OAuth AS メタデータ |
 | `GET /.well-known/oauth-protected-resource` | Protected Resource メタデータ |
+| `GET /.well-known/oauth-protected-resource/mcp` | 同上（RFC 9728 path-aware） |
 | `POST /oauth/register` | Dynamic Client Registration |
 | `GET/POST /oauth/authorize` | パスコード入力 → auth code |
 | `POST /oauth/token` | code → access token（PKCE） |
-| `ALL /mcp` | MCP Streamable HTTP（**Bearer 必須**） |
+| `ALL /mcp` | MCP Streamable HTTP（**Bearer 必須**・SDK `requireBearerAuth`） |
 
 ---
 

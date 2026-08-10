@@ -1,4 +1,8 @@
-import { createMcpExpressApp } from '@modelcontextprotocol/express';
+import {
+  createMcpExpressApp,
+  getOAuthProtectedResourceMetadataUrl,
+  requireBearerAuth,
+} from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import express, { type NextFunction, type Request, type Response } from 'express';
@@ -11,17 +15,8 @@ import {
   registerClient,
   resourceBaseUrl,
   tokenEndpoint,
-  validateBearer,
+  tokenVerifier,
 } from './oauth.js';
-
-const PUBLIC_PATHS = new Set([
-  '/health',
-  '/.well-known/oauth-authorization-server',
-  '/.well-known/oauth-protected-resource',
-  '/oauth/register',
-  '/oauth/authorize',
-  '/oauth/token',
-]);
 
 function parseAllowedHosts(): string[] {
   const raw = process.env.ALLOWED_HOSTS?.trim();
@@ -34,33 +29,18 @@ function parseAllowedHosts(): string[] {
   return ['localhost', '127.0.0.1'];
 }
 
-function bearerGuard(req: Request, res: Response, next: NextFunction): void {
-  if (PUBLIC_PATHS.has(req.path) || req.path.startsWith('/oauth/')) {
-    next();
-    return;
-  }
-
-  const auth = req.header('authorization') ?? '';
-  if (!auth.startsWith('Bearer ')) {
-    res.setHeader(
-      'WWW-Authenticate',
-      `Bearer resource_metadata="${resourceBaseUrl(req)}/.well-known/oauth-protected-resource"`,
-    );
-    res.status(401).json({ error: 'Missing Bearer token' });
-    return;
-  }
-
-  const token = auth.slice('Bearer '.length).trim();
-  if (!validateBearer(token)) {
-    res.setHeader(
-      'WWW-Authenticate',
-      `Bearer error="invalid_token", resource_metadata="${resourceBaseUrl(req)}/.well-known/oauth-protected-resource"`,
-    );
-    res.status(401).json({ error: 'Invalid or expired token' });
-    return;
-  }
-
-  next();
+/**
+ * SDK `requireBearerAuth` + path-aware `resource_metadata` URL (RFC 9728).
+ * Host is derived per request so we stay simple without PUBLIC_BASE_URL.
+ */
+function mcpBearerAuth(req: Request, res: Response, next: NextFunction): void {
+  const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(
+    new URL(`${resourceBaseUrl(req)}/mcp`),
+  );
+  void requireBearerAuth({
+    verifier: tokenVerifier,
+    resourceMetadataUrl,
+  })(req, res, next);
 }
 
 export function buildApp() {
@@ -78,7 +58,9 @@ export function buildApp() {
   });
 
   app.get('/.well-known/oauth-authorization-server', oauthAuthorizationServerMetadata);
+  // Root + path-aware (/.well-known/oauth-protected-resource/mcp) for RFC 9728 clients
   app.get('/.well-known/oauth-protected-resource', oauthProtectedResourceMetadata);
+  app.get('/.well-known/oauth-protected-resource/mcp', oauthProtectedResourceMetadata);
   app.post('/oauth/register', registerClient);
   app.get('/oauth/authorize', authorizeGet);
   app.post('/oauth/authorize', authorizePost);
@@ -87,13 +69,13 @@ export function buildApp() {
   const mcpHandler = createMcpHandler(createServer);
   const node = toNodeHandler(mcpHandler);
 
-  // Auth for MCP only. Path normalize: clients may hit /mcp without slash.
   const mcpMount = (req: Request, res: Response) => {
     void node(req, res, req.body);
   };
 
-  app.all('/mcp', bearerGuard, mcpMount);
-  app.all('/mcp/', bearerGuard, mcpMount);
+  // Bearer only on /mcp (OAuth AS routes stay public)
+  app.all('/mcp', mcpBearerAuth, mcpMount);
+  app.all('/mcp/', mcpBearerAuth, mcpMount);
 
   return app;
 }

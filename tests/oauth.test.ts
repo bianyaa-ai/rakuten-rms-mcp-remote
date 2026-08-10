@@ -26,7 +26,7 @@ describe('oauth + bearer', () => {
     }
   });
 
-  it('rejects /mcp without bearer', async () => {
+  it('rejects /mcp without bearer and advertises path-aware metadata', async () => {
     const app = buildApp();
     const server = app.listen(0);
     try {
@@ -45,6 +45,26 @@ describe('oauth + bearer', () => {
         }),
       });
       expect(r.status).toBe(401);
+      const www = r.headers.get('www-authenticate') ?? '';
+      expect(www).toContain('/.well-known/oauth-protected-resource/mcp');
+      const body = (await r.json()) as { error: string };
+      expect(body.error).toBe('invalid_token');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('serves path-aware protected resource metadata', async () => {
+    const app = buildApp();
+    const server = app.listen(0);
+    try {
+      const { port } = server.address() as { port: number };
+      const r = await fetch(
+        `http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`,
+      );
+      expect(r.status).toBe(200);
+      const j = (await r.json()) as { resource: string };
+      expect(j.resource).toContain('/mcp');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

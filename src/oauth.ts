@@ -1,11 +1,20 @@
 /**
  * Minimal OAuth 2.0 + PKCE for Claude.ai / ChatGPT MCP connectors.
  * Gate is a shared passcode (RMS_MCP_OAUTH_PASSCODE), same model as Python rms-mcp.
+ *
+ * Token verification follows the MCP Resource Server shape
+ * (`OAuthTokenVerifier` → `AuthInfo` with `expiresAt`).
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Request, Response } from 'express';
+import {
+  OAuthError,
+  OAuthErrorCode,
+  type AuthInfo,
+  type OAuthTokenVerifier,
+} from '@modelcontextprotocol/server';
 
 const ACCESS_TOKEN_TTL = 30 * 24 * 3600;
 const AUTH_CODE_TTL = 600;
@@ -148,17 +157,39 @@ function verifyPkce(verifier: string, challenge: string): boolean {
   return constantTimeEq(digest, challenge);
 }
 
-export function validateBearer(token: string): boolean {
-  const apiKey = process.env.RMS_MCP_API_KEY?.trim();
-  if (apiKey && constantTimeEq(token, apiKey)) return true;
-  const rec = store.accessTokens.get(token);
-  if (!rec) return false;
-  if (rec.expires_at < Date.now() / 1000) {
-    store.accessTokens.delete(token);
-    return false;
-  }
-  return true;
+function scopesFrom(scope: string): string[] {
+  return scope.split(/\s+/).filter(Boolean);
 }
+
+/**
+ * MCP `OAuthTokenVerifier`: populates `expiresAt` (required by SDK bearer auth).
+ */
+export async function verifyAccessToken(token: string): Promise<AuthInfo> {
+  const apiKey = process.env.RMS_MCP_API_KEY?.trim();
+  if (apiKey && constantTimeEq(token, apiKey)) {
+    return {
+      token,
+      clientId: 'api-key',
+      scopes: ['mcp'],
+      expiresAt: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL,
+    };
+  }
+
+  const rec = store.accessTokens.get(token);
+  if (!rec || rec.expires_at < Date.now() / 1000) {
+    if (rec) store.accessTokens.delete(token);
+    throw new OAuthError(OAuthErrorCode.InvalidToken, 'Invalid or expired token');
+  }
+
+  return {
+    token,
+    clientId: rec.client_id,
+    scopes: scopesFrom(rec.scope || 'mcp'),
+    expiresAt: Math.floor(rec.expires_at),
+  };
+}
+
+export const tokenVerifier: OAuthTokenVerifier = { verifyAccessToken };
 
 export function oauthAuthorizationServerMetadata(req: Request, res: Response): void {
   const base = resourceBaseUrl(req);
@@ -178,7 +209,7 @@ export function oauthAuthorizationServerMetadata(req: Request, res: Response): v
 export function oauthProtectedResourceMetadata(req: Request, res: Response): void {
   const base = resourceBaseUrl(req);
   res.json({
-    resource: base,
+    resource: `${base}/mcp`,
     authorization_servers: [base],
     scopes_supported: ['mcp'],
     bearer_methods_supported: ['header'],
