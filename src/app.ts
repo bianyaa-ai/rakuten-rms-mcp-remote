@@ -101,3 +101,7 @@ export function buildApp() {
 
   return app;
 }
+
+// Vercel Express entry looks for src/app.ts default export
+export default buildApp();
+

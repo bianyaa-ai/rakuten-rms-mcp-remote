@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 import { hasCredentials } from 'rakuten-rms-mcp';
-import { buildApp } from './app.js';
-
-const app = buildApp();
+import app from './app.js';
 
 function requireAuthConfig(): void {
   const hasPass = Boolean(process.env.RMS_MCP_OAUTH_PASSCODE?.trim());
@@ -29,7 +27,7 @@ function startLocal(): void {
   });
 }
 
-// Vercel imports this module and uses the default export (no listen).
+// Local / Docker: listen. Vercel uses the default export from src/app.ts.
 if (!process.env.VERCEL) {
   startLocal();
 }

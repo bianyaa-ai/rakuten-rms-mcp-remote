@@ -100,7 +100,7 @@ npm start
 
 ## Vercel
 
-Express アプリとしてデプロイします（`src/index.ts` の default export）。
+Express アプリとしてデプロイします（`src/app.ts` の default export）。
 
 1. このリポを Vercel に Import（または `npx vercel`）
 2. Environment Variables に少なくとも次を設定
