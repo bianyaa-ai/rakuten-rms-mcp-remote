@@ -18,15 +18,34 @@ import {
   tokenVerifier,
 } from './oauth.js';
 
+function hostFromUrl(raw: string | undefined): string | undefined {
+  if (!raw?.trim()) return undefined;
+  try {
+    const withScheme = raw.includes('://') ? raw : `https://${raw}`;
+    return new URL(withScheme).hostname;
+  } catch {
+    return raw.trim().split(':')[0] || undefined;
+  }
+}
+
 function parseAllowedHosts(): string[] {
+  const hosts = new Set<string>(['localhost', '127.0.0.1']);
+
   const raw = process.env.ALLOWED_HOSTS?.trim();
   if (raw) {
-    return raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    for (const part of raw.split(',')) {
+      const h = part.trim();
+      if (h) hosts.add(h);
+    }
   }
-  return ['localhost', '127.0.0.1'];
+
+  // Vercel sets these at runtime — avoid requiring ALLOWED_HOSTS on first deploy
+  for (const key of ['VERCEL_URL', 'VERCEL_BRANCH_URL', 'VERCEL_PROJECT_PRODUCTION_URL']) {
+    const h = hostFromUrl(process.env[key]);
+    if (h) hosts.add(h);
+  }
+
+  return [...hosts];
 }
 
 /**
@@ -49,6 +68,9 @@ export function buildApp() {
     host: '0.0.0.0',
     allowedHosts,
   });
+
+  // Needed behind Vercel / reverse proxies for correct https + host in OAuth metadata
+  app.set('trust proxy', 1);
 
   // Urlencoded form for /oauth/authorize POST (passcode form)
   app.use(express.urlencoded({ extended: false }));

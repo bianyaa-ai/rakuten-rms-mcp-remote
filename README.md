@@ -98,6 +98,23 @@ npm start
 
 ---
 
+## Vercel
+
+Express アプリとしてデプロイします（`src/index.ts` の default export）。
+
+1. このリポを Vercel に Import（または `npx vercel`）
+2. Environment Variables に少なくとも次を設定
+   - `RMS_SERVICE_SECRET` / `RMS_LICENSE_KEY`
+   - `RMS_MCP_OAUTH_PASSCODE`（自分で決めた共有パスコード）
+3. Deploy 後の MCP URL: `https://<project>.vercel.app/mcp`
+4. ChatGPT カスタムコネクタにその URL を追加し、認可画面でパスコードを入力
+
+`ALLOWED_HOSTS` は任意（未設定でも `VERCEL_URL` 系を自動許可）。カスタムドメイン利用時は本番ホスト名を追加してください。
+
+OAuth トークンはサーバレス上では原則 `/tmp`（インスタンス内）。コールドスタートで消えることがあるので、再認可が必要になる場合があります。
+
+---
+
 ## 開発
 
 ```bash

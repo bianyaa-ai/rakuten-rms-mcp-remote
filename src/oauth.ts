@@ -67,7 +67,10 @@ const pendingAuth = new Map<string, PendingAuth>();
 
 function storePath(): string | undefined {
   const raw = process.env.RMS_MCP_OAUTH_STORE_PATH?.trim();
-  return raw || undefined;
+  if (raw) return raw;
+  // Serverless: persist within the instance (/tmp). Lost on cold start.
+  if (process.env.VERCEL) return '/tmp/rms-mcp-oauth-store.json';
+  return undefined;
 }
 
 function loadFromDisk(): void {
