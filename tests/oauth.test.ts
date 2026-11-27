@@ -5,7 +5,7 @@ import { resetOAuthStoreForTests } from '../src/oauth.js';
 describe('oauth + bearer', () => {
   beforeEach(() => {
     resetOAuthStoreForTests();
-    process.env.RMS_MCP_OAUTH_PASSCODE = 'test-pass-123-very-long-456789';
+    process.env.RMS_MCP_OAUTH_PASSCODE = 'test-pass-123';
     process.env.RMS_MCP_API_KEY = 'static-key-xyz';
     process.env.ALLOWED_HOSTS = 'localhost,127.0.0.1';
   });
@@ -113,7 +113,7 @@ describe('oauth + bearer', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           client_name: 'Test',
-          redirect_uris: ['https://chatgpt.com/connector/oauth/test'],
+          redirect_uris: ['https://example.com/cb'],
         }),
       });
       expect(reg.status).toBe(201);
@@ -125,7 +125,7 @@ describe('oauth + bearer', () => {
       const authUrl = new URL(`${base}/oauth/authorize`);
       authUrl.searchParams.set('response_type', 'code');
       authUrl.searchParams.set('client_id', client_id);
-      authUrl.searchParams.set('redirect_uri', 'https://chatgpt.com/connector/oauth/test');
+      authUrl.searchParams.set('redirect_uri', 'https://example.com/cb');
       authUrl.searchParams.set('code_challenge', challenge);
       authUrl.searchParams.set('code_challenge_method', 'S256');
       authUrl.searchParams.set('state', 'xyz');
@@ -141,7 +141,7 @@ describe('oauth + bearer', () => {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           state_token: stateToken!,
-          passcode: 'test-pass-123-very-long-456789',
+          passcode: 'test-pass-123',
         }),
         redirect: 'manual',
       });
@@ -156,7 +156,7 @@ describe('oauth + bearer', () => {
         body: new URLSearchParams({
           grant_type: 'authorization_code',
           code: code!,
-          redirect_uri: 'https://chatgpt.com/connector/oauth/test',
+          redirect_uri: 'https://example.com/cb',
           client_id,
           code_verifier: verifier,
         }),
