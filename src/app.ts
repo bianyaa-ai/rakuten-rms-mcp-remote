@@ -77,7 +77,7 @@ export function buildApp() {
   // Urlencoded form for /oauth/authorize POST (passcode form)
   app.use(express.urlencoded({ extended: false }));
   app.use('/oauth', (_req, res, next) => {
-    res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});
+    res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'"});
     next();
   });
 
