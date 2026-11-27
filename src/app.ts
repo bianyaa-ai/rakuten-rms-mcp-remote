@@ -7,6 +7,8 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createServer } from 'rakuten-rms-mcp';
+import { guardMcp, installOutboundGuard } from './security.js';
+installOutboundGuard();
 import {
   authorizeGet,
   authorizePost,
@@ -74,6 +76,10 @@ export function buildApp() {
 
   // Urlencoded form for /oauth/authorize POST (passcode form)
   app.use(express.urlencoded({ extended: false }));
+  app.use('/oauth', (_req, res, next) => {
+    res.set({'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"});
+    next();
+  });
 
   app.get('/health', (_req, res) => {
     res.type('text').send('ok');
@@ -96,8 +102,8 @@ export function buildApp() {
   };
 
   // Bearer only on /mcp (OAuth AS routes stay public)
-  app.all('/mcp', mcpBearerAuth, mcpMount);
-  app.all('/mcp/', mcpBearerAuth, mcpMount);
+  app.all('/mcp', mcpBearerAuth, guardMcp, mcpMount);
+  app.all('/mcp/', mcpBearerAuth, guardMcp, mcpMount);
 
   return app;
 }

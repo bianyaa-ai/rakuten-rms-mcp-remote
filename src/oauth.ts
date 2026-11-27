@@ -16,7 +16,7 @@ import {
   type OAuthTokenVerifier,
 } from '@modelcontextprotocol/server';
 
-const ACCESS_TOKEN_TTL = 30 * 24 * 3600;
+const ACCESS_TOKEN_TTL = 24 * 3600;
 const AUTH_CODE_TTL = 600;
 
 type ClientRecord = {
@@ -64,6 +64,26 @@ const store = {
 };
 
 const pendingAuth = new Map<string, PendingAuth>();
+const failedAttempts: number[] = [];
+const MAX_RECORDS = 2000;
+function allowedRedirect(raw: unknown): raw is string {
+  if (typeof raw !== 'string') return false;
+  try {
+    const u = new URL(raw);
+    return u.origin === 'https://chatgpt.com' && !u.username && !u.password &&
+      !u.search && !u.hash && /^\/connector\/oauth\/[A-Za-z0-9_-]+$/.test(u.pathname);
+  } catch { return false; }
+}
+function escapeHtml(raw: string): string {
+  return raw.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+}
+function prune(): void {
+  const now = Date.now() / 1000;
+  for (const [k,v] of pendingAuth) if (v.expires_at <= now) pendingAuth.delete(k);
+  for (const [k,v] of store.authCodes) if (v.used || v.expires_at <= now) store.authCodes.delete(k);
+  for (const [k,v] of store.accessTokens) if (v.expires_at <= now) store.accessTokens.delete(k);
+  while (failedAttempts.length && failedAttempts[0] <= Date.now() - 15 * 60 * 1000) failedAttempts.shift();
+}
 
 function storePath(): string | undefined {
   const raw = process.env.RMS_MCP_OAUTH_STORE_PATH?.trim();
@@ -131,6 +151,7 @@ export function resetOAuthStoreForTests(): void {
   store.authCodes.clear();
   store.accessTokens.clear();
   pendingAuth.clear();
+  failedAttempts.length = 0;
 }
 
 function passcode(): string | undefined {
@@ -138,6 +159,8 @@ function passcode(): string | undefined {
 }
 
 export function resourceBaseUrl(req: Request): string {
+  const configured = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  if (configured) return `https://${configured}`;
   const proto =
     (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() ||
     req.protocol;
@@ -220,9 +243,11 @@ export function oauthProtectedResourceMetadata(req: Request, res: Response): voi
 }
 
 export async function registerClient(req: Request, res: Response): Promise<void> {
-  const body = req.body as { redirect_uris?: unknown; client_name?: string };
+  prune();
+  if (store.clients.size >= MAX_RECORDS) { res.status(429).json({error: 'temporarily_unavailable'}); return; }
+  const body = (req.body ?? {}) as { redirect_uris?: unknown; client_name?: string };
   const redirectUris = body.redirect_uris;
-  if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
+  if (!Array.isArray(redirectUris) || redirectUris.length === 0 || redirectUris.length > 5 || !redirectUris.every(allowedRedirect)) {
     res.status(400).json({
       error: 'invalid_redirect_uri',
       error_description: 'redirect_uris is required',
@@ -237,7 +262,7 @@ export async function registerClient(req: Request, res: Response): Promise<void>
     grant_types: ['authorization_code'],
     response_types: ['code'],
     token_endpoint_auth_method: 'none',
-    client_name: body.client_name ?? 'mcp-client',
+    client_name: typeof body.client_name === 'string' ? body.client_name.slice(0, 120) : 'mcp-client',
   };
   store.clients.set(clientId, record);
   saveToDisk();
@@ -265,19 +290,21 @@ button{margin-top:12px;width:100%;padding:10px;font-size:16px;background:#225533
 <body>
 <h1>rakuten-rms-mcp に接続を許可</h1>
 <div class="box">
-  <p>${opts.clientName} から接続要求があります。</p>
+  <p>${escapeHtml(opts.clientName)} から接続要求があります。</p>
   <form method="post" action="/oauth/authorize">
-    <input type="hidden" name="state_token" value="${opts.stateToken}">
+    <input type="hidden" name="state_token" value="${escapeHtml(opts.stateToken)}">
     <input type="password" name="passcode" placeholder="共有パスコード" autofocus required>
     <button type="submit">許可する</button>
   </form>
   ${opts.errorHtml ?? ''}
-  <p class="meta">redirect_uri: ${opts.redirectUri}</p>
+  <p class="meta">redirect_uri: ${escapeHtml(opts.redirectUri)}</p>
 </div>
 </body></html>`;
 }
 
 export function authorizeGet(req: Request, res: Response): void {
+  prune();
+  if (pendingAuth.size >= MAX_RECORDS) { res.status(429).send('Too many sessions'); return; }
   const clientId = String(req.query.client_id ?? '');
   const redirectUri = String(req.query.redirect_uri ?? '');
   const responseType = String(req.query.response_type ?? '');
@@ -290,7 +317,7 @@ export function authorizeGet(req: Request, res: Response): void {
     res.status(400).send('unsupported_response_type');
     return;
   }
-  if (!codeChallenge || codeChallengeMethod !== 'S256') {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(codeChallenge) || codeChallengeMethod !== 'S256') {
     res.status(400).send('PKCE S256 required');
     return;
   }
@@ -299,7 +326,7 @@ export function authorizeGet(req: Request, res: Response): void {
     res.status(400).send('unknown client_id');
     return;
   }
-  if (!client.redirect_uris.includes(redirectUri)) {
+  if (!allowedRedirect(redirectUri) || !client.redirect_uris.includes(redirectUri)) {
     res.status(400).send('redirect_uri not registered');
     return;
   }
@@ -325,6 +352,8 @@ export function authorizeGet(req: Request, res: Response): void {
 }
 
 export function authorizePost(req: Request, res: Response): void {
+  prune();
+  if (failedAttempts.length >= 10) { res.status(429).send('Too many failed attempts. Retry later.'); return; }
   const stateToken = String(req.body?.state_token ?? '');
   const submitted = String(req.body?.passcode ?? '');
   const pending = pendingAuth.get(stateToken);
@@ -333,11 +362,12 @@ export function authorizePost(req: Request, res: Response): void {
     return;
   }
   const serverPass = passcode();
-  if (!serverPass) {
+  if (!serverPass || serverPass.length < 24) {
     res.status(503).send('Server misconfigured: RMS_MCP_OAUTH_PASSCODE not set');
     return;
   }
   if (!constantTimeEq(submitted, serverPass)) {
+    failedAttempts.push(Date.now());
     const client = store.clients.get(pending.client_id);
     res
       .status(401)
@@ -353,6 +383,7 @@ export function authorizePost(req: Request, res: Response): void {
     return;
   }
 
+  if (!allowedRedirect(pending.redirect_uri) || store.authCodes.size >= MAX_RECORDS) { res.status(400).send('Invalid session'); return; }
   const code = crypto.randomBytes(32).toString('base64url');
   store.authCodes.set(code, {
     code,
@@ -373,6 +404,9 @@ export function authorizePost(req: Request, res: Response): void {
 }
 
 export function tokenEndpoint(req: Request, res: Response): void {
+  prune();
+  res.set('Cache-Control', 'no-store');
+  if (store.accessTokens.size >= MAX_RECORDS) { res.status(429).json({error: 'temporarily_unavailable'}); return; }
   const grantType = String(req.body?.grant_type ?? '');
   if (grantType !== 'authorization_code') {
     res.status(400).json({ error: 'unsupported_grant_type' });
@@ -392,7 +426,7 @@ export function tokenEndpoint(req: Request, res: Response): void {
     res.status(400).json({ error: 'invalid_grant' });
     return;
   }
-  if (!verifyPkce(codeVerifier, ac.code_challenge)) {
+  if (!/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier) || !verifyPkce(codeVerifier, ac.code_challenge)) {
     res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE failed' });
     return;
   }
