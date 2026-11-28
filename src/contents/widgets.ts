@@ -1,7 +1,6 @@
 
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { contentsWriteBlockedResult } from "./gate.js";
 
 const WIDGET_API =
   "https://api.rms.rakuten.co.jp/es/1.0/shop-page/widgets";
@@ -393,6 +392,23 @@ async function requestWidget(
       );
     }
 
+    // X-Dry-Run is not verified to be honoured by Rakuten. A widgetId in
+    // the "validation" response means the widget was actually registered.
+    if (typeof data?.widgetId === "string") {
+      return {
+        ok: true,
+        dryRun: true,
+        registered: true,
+        warning:
+          "X-Dry-Run=trueで送信しましたが、レスポンスにwidgetIdが含まれています。" +
+          "楽天側でパーツが登録された可能性があります。再送信しないでください。",
+        widgetType: widget.type,
+        widgetId: data.widgetId,
+        requestId,
+        elapsedMs: Date.now() - startedAt
+      };
+    }
+
     return {
       ok: true,
       dryRun: true,
@@ -458,15 +474,21 @@ export function registerWidgetTools(
   server: McpServer
 ): void {
 
-  // Validation only: no Rakuten data changes.
+  // Sends the widget with an "X-Dry-Run: true" header. That header is NOT
+  // verified to be honoured by the Rakuten API, so this request may reach
+  // Rakuten as a normal request. See the tool description.
 
   server.registerTool(
     "contents_widget_validate",
     {
       description:
-        "楽天コンテンツパーツの事前検証を行う。" +
-        "X-Dry-Run=true固定。" +
-        "楽天側への登録や変更は一切行わない。" +
+        "楽天コンテンツパーツの事前検証リクエストを送る。" +
+        "入力スキーマをローカルで検証したうえで、X-Dry-Run: trueヘッダー付きで楽天APIへ送信する。" +
+        "注意: このヘッダーが楽天側でDry-Run（検証のみ）として扱われることは、" +
+        "公式ドキュメントまたは実測で未確認。" +
+        "楽天APIに実際にリクエストが届き、無視された場合はパーツが登録される可能性がある。" +
+        "利用前に楽天公式APIの挙動を確認すること。" +
+        "レスポンスにwidgetIdが含まれた場合は登録済みとして警告する。" +
         "TITLE、TEXT、LARGE_IMAGE、SMALL_IMAGE、" +
         "ITEM_LIST、HYPERLINK、VIDEOに対応。",
 
@@ -476,9 +498,9 @@ export function registerWidgetTools(
 
 
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: true
       }
     },
@@ -494,14 +516,15 @@ export function registerWidgetTools(
     }
   );
 
-  // Actual creation requires write permission.
+  // Actual creation requires explicit per-operation confirmation.
 
   server.registerTool(
     "contents_widget_create",
     {
       description:
         "楽天コンテンツ用パーツを新規登録する。" +
-        "登録前にDry-Runによる検証を必ず実施する。" +
+        "登録前にcontents_widget_validateと同じ事前検証リクエスト（X-Dry-Run: true、楽天側の挙動は未確認）を必ず送る。" +
+        "事前検証のレスポンスにwidgetIdが含まれた場合は登録済みとみなし、二重登録を避けるため本登録は送らない。" +
         "ユーザーの明示承認が必要。" +
         "既存パーツの編集・削除・公開は行わない。" +
         "登録結果が不明な場合は自動再登録しない。",
@@ -529,8 +552,6 @@ export function registerWidgetTools(
       widget,
       confirmCreate
     }) => {
-      const blocked = contentsWriteBlockedResult();
-      if (blocked) return blocked;
 
       try {
         if (confirmCreate !== true) {
@@ -547,6 +568,13 @@ export function registerWidgetTools(
           throw new Error(
             "事前検証に失敗したため登録を中止しました"
           );
+        }
+
+        // The validation request itself registered the widget (the
+        // X-Dry-Run header was not honoured). Never send a second
+        // request: that would create a duplicate.
+        if ((validation as { registered?: boolean }).registered) {
+          return successResult(validation);
         }
 
         // No automatic retry.

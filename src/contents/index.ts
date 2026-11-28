@@ -5,15 +5,22 @@ import { registerContentsTools as registerContentsListTools } from "./contents.j
 import { registerWidgetTools } from "./widgets.js";
 import { registerContentsWriteTools } from "./contents-write.js";
 import { registerContentsUpdateTools } from "./contents-update.js";
-import {
-  CONTENTS_WRITE_ENV,
-  CONTENTS_WRITE_TOOLS,
-  isContentsWriteEnabled
-} from "./gate.js";
 
 export const CONTENTS_SERVICE_VERSION = "1.1.0";
 
 export const AI_CONTENTS_FOLDER_ID = 14313603;
+
+/**
+ * Tools that change Rakuten data. Informational only (reported by
+ * contents_health); there is no global write gate. Every one of them is
+ * protected per operation by its own explicit confirmation input and schema.
+ */
+export const CONTENTS_WRITE_TOOLS = [
+  "cabinet_upload_image",
+  "contents_create",
+  "contents_update",
+  "contents_widget_create"
+] as const;
 
 /** Every tool name registered by registerContentsTools. */
 export const CONTENTS_TOOL_NAMES = [
@@ -42,13 +49,31 @@ export function contentsHealthPayload(
     service: "rakuten-rms-mcp-remote",
     module: "contents",
     version: CONTENTS_SERVICE_VERSION,
-    // The request reached this tool only after the host's /mcp
-    // bearer auth (OAuth 2.1 access token or static API key) passed.
-    authentication: "unified-mcp-oauth",
+    // The request reached this tool only after the host's shared /mcp
+    // Bearer authentication passed. That check accepts either an access
+    // token issued by the host's OAuth 2.1 flow or the configured static
+    // Bearer API key. No secret value is ever returned here.
+    authentication: "shared-bearer",
+    authenticationMethods: [
+      "oauth2.1-access-token",
+      "static-bearer-api-key"
+    ],
     authenticated: true,
-    writeEnabled: isContentsWriteEnabled(env),
-    writeEnvVar: CONTENTS_WRITE_ENV,
+    // No global write gate: write tools are available to authenticated
+    // callers and protected per operation.
+    globalWriteGate: false,
     writeTools: [...CONTENTS_WRITE_TOOLS],
+    writeSafeguards: [
+      "explicit confirmUpload/confirmCreate/confirmUpdate input",
+      "strict input schema validation",
+      "duplicate prevention",
+      "private/unpublished page defaults",
+      "mandatory widget validation before widget create",
+      "expectedRevisionId check on update",
+      "image upload deduplication, no overwrite",
+      "no automatic retry after ambiguous writes",
+      "read-after-write verification"
+    ],
     rmsServiceSecretConfigured,
     rmsLicenseKeyConfigured,
     rmsCredentialsConfigured:
@@ -68,7 +93,9 @@ function registerHealth(server: McpServer): void {
     {
       description:
         "楽天コンテンツ/R-Cabinetツールの状態を確認する。" +
-        "統合MCP認証・書き込みゲート・楽天API認証情報の設定状況を返す。" +
+        "認証方式（OAuth 2.1発行のアクセストークンまたは設定済みの静的Bearer APIキーによる共有Bearer認証）、" +
+        "書き込みツール一覧と操作ごとの安全策、楽天API認証情報の設定有無を返す。" +
+        "シークレットの値は返さない。" +
         "楽天APIは呼び出さない。",
       inputSchema: z.object({}),
       annotations: {
@@ -90,8 +117,9 @@ function registerHealth(server: McpServer): void {
 
 /**
  * Register all Contents / R-Cabinet tools on the host's existing McpServer.
- * Authentication is handled by the host's /mcp bearer middleware; write
- * tools are additionally gated by RMS_CONTENTS_ENABLE_WRITE (default OFF).
+ * Authentication is handled by the host's /mcp Bearer middleware. There is
+ * no global write gate: each write tool protects itself with explicit
+ * confirmation inputs, schema validation and its other per-operation checks.
  */
 export function registerContentsTools(server: McpServer): void {
   registerHealth(server);

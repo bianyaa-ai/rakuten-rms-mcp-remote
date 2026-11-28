@@ -1,7 +1,6 @@
 
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { contentsWriteBlockedResult } from "./gate.js";
 import { createHash } from "node:crypto";
 
 const CABINET_API =
@@ -752,8 +751,6 @@ export function registerCabinetTools(
       }
     },
     async ({ imageUrl, confirmUpload }) => {
-      const blocked = contentsWriteBlockedResult();
-      if (blocked) return blocked;
 
       try {
         if (confirmUpload !== true) {

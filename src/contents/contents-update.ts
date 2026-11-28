@@ -1,7 +1,6 @@
 
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { contentsWriteBlockedResult } from "./gate.js";
 
 const LAYOUT_API =
   "https://api.rms.rakuten.co.jp/es/1.0/shop-page/layouts";
@@ -939,8 +938,6 @@ export function registerContentsUpdateTools(
     },
 
     async (input) => {
-      const blocked = contentsWriteBlockedResult();
-      if (blocked) return blocked;
 
       try {
         return successResult(

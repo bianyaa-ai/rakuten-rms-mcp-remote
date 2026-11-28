@@ -66,18 +66,20 @@ npm start
 | `contents_health` | 読み取り（楽天 API は呼ばない） |
 | `cabinet_list_folders` / `cabinet_list_files` | 読み取り |
 | `contents_list` | 読み取り |
-| `contents_widget_validate` | 読み取り（Dry-Run 固定） |
+| `contents_widget_validate` | 事前検証リクエスト（`X-Dry-Run: true` 付きで楽天 API へ送信。下記注意参照） |
 | `contents_update_preview` | 読み取り（ローカル事前確認） |
 | `cabinet_upload_image` | **書き込み** |
 | `contents_widget_create` | **書き込み** |
 | `contents_create` | **書き込み** |
 | `contents_update` | **書き込み** |
 
-### 書き込みゲート `RMS_CONTENTS_ENABLE_WRITE`
+### 認証と書き込みの安全策
 
-- 上記 4 つの書き込みツールだけを制御します。未設定・`true` 以外は **OFF**（呼び出すと楽天へは一切リクエストせずエラーを返します）。読み取りツールは常に利用可能です。
-- 既存 RMS ツールの `RMS_MCP_ENABLE_WRITE` とは独立です（相互に影響しません）。
-- ゲートが ON でも、各ツール本来の安全策は維持されます: 明示承認フラグ、非公開ページ固定、重複防止、ウィジェット登録前の Dry-Run 必須、`revisionId` 照合、画像アップロードの重複排除、自動リトライ禁止、作成・更新後の読み取り確認。
+- 認証済み（`/mcp` の共有 Bearer 認証: OAuth 2.1 発行のアクセストークン、または設定済みの静的 Bearer API キー）のクライアントは、既存 RMS ツールも Contents ツールも **読み取り・書き込みともに既定で利用可能** です。書き込みを無効にするグローバルな環境変数（`RMS_CONTENTS_ENABLE_WRITE` / `RMS_MCP_ENABLE_WRITE`）はありません。認証は変更していません。
+- 書き込みは操作ごとの安全策で守ります: 明示承認入力（`confirmUpload` / `confirmCreate` / `confirmUpdate`）、厳格なスキーマ検証、重複防止、非公開ページ固定、ウィジェット登録前の事前検証必須、`expectedRevisionId` 照合、画像アップロードの重複排除（上書きなし）、結果不明時の自動リトライ禁止、作成・更新後の読み取り確認。承認入力が無い呼び出しは楽天へリクエストせずに拒否されます。
+- 既存 RMS ツール（`rakuten-rms-mcp` 由来）の `rms_cancel_order` / `rms_cancel_order_after_shipping` / `rms_delete_*` などは、パッケージ側に承認入力がありません。クライアント側で必ずユーザー確認を取ってください。
+
+**`contents_widget_validate` について:** このツールは入力をローカルで検証した後、`X-Dry-Run: true` ヘッダー付きで楽天パーツ API に実際にリクエストを送ります。楽天がこのヘッダーを検証のみとして扱うことは、公式ドキュメントでも実測でも確認できていません。無視された場合はパーツが登録される可能性があります（レスポンスに `widgetId` が含まれた場合は警告を返し、`contents_widget_create` は二重登録を避けるため本登録を送りません）。利用前に楽天公式 API の挙動を確認してください。
 
 ---
 
@@ -118,7 +120,6 @@ npm start
 | `RMS_MCP_OAUTH_PASSCODE` | OAuth 時 | 共有パスコード |
 | `RMS_MCP_API_KEY` | 任意 | 静的 Bearer |
 | `RMS_MCP_OAUTH_STORE_PATH` | 任意 | トークン永続化パス |
-| `RMS_CONTENTS_ENABLE_WRITE` | 任意 | `true` のときだけ Contents 書き込みツールを有効化（既定 OFF） |
 
 **注意:** 現状は **1 プロセス = 1 店舗の RMS 鍵**（サーバ env）です。個人事業主ごとの鍵分離はまだありません。
 
