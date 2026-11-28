@@ -6,7 +6,6 @@ import {
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { createServer } from 'rakuten-rms-mcp';
 import {
   authorizeGet,
   authorizePost,
@@ -17,6 +16,7 @@ import {
   tokenEndpoint,
   tokenVerifier,
 } from './oauth.js';
+import { createUnifiedServer } from './server.js';
 
 function hostFromUrl(raw: string | undefined): string | undefined {
   if (!raw?.trim()) return undefined;
@@ -88,7 +88,7 @@ export function buildApp() {
   app.post('/oauth/authorize', authorizePost);
   app.post('/oauth/token', tokenEndpoint);
 
-  const mcpHandler = createMcpHandler(createServer);
+  const mcpHandler = createMcpHandler(createUnifiedServer);
   const node = toNodeHandler(mcpHandler);
 
   const mcpMount = (req: Request, res: Response) => {

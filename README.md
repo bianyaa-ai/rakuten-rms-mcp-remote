@@ -4,7 +4,8 @@
 
 - Transport: **Streamable HTTP**（`/mcp`）
 - Auth: **OAuth 2.1 + PKCE**（共有パスコード）および任意の **静的 Bearer**
-- ツール実装はコアパッケージを依存として利用（このリポに RMS ロジックは置きません）
+- RMS ツール実装はコアパッケージを依存として利用（このリポに RMS ロジックは置きません）
+- **R-Contents / R-Cabinet ツール**（`src/contents/`）を同じ `McpServer`・同じ `/mcp`・同じ OAuth 認証で公開（下記「Contents ツール」）
 
 Claude.ai / ChatGPT などの「URL を貼る」系クライアント向けです。Cursor のローカル stdio はコア側を使ってください。
 
@@ -56,6 +57,30 @@ npm start
 
 ---
 
+## Contents ツール（R-Contents / R-Cabinet）
+
+`rakuten-contents-mcp` を統合したものです。別サーバ・別認証エンドポイントはなく、`/mcp` の Bearer 認証（OAuth 2.1 / 静的 Bearer）をそのまま使います。Contents 専用の Auth0 / JWT 検証や `AUTH0_ALLOWED_USER` は不要です。楽天 API 認証は既存の `RMS_SERVICE_SECRET` / `RMS_LICENSE_KEY` を共用します。
+
+| ツール | 種別 |
+|--------|------|
+| `contents_health` | 読み取り（楽天 API は呼ばない） |
+| `cabinet_list_folders` / `cabinet_list_files` | 読み取り |
+| `contents_list` | 読み取り |
+| `contents_widget_validate` | 読み取り（Dry-Run 固定） |
+| `contents_update_preview` | 読み取り（ローカル事前確認） |
+| `cabinet_upload_image` | **書き込み** |
+| `contents_widget_create` | **書き込み** |
+| `contents_create` | **書き込み** |
+| `contents_update` | **書き込み** |
+
+### 書き込みゲート `RMS_CONTENTS_ENABLE_WRITE`
+
+- 上記 4 つの書き込みツールだけを制御します。未設定・`true` 以外は **OFF**（呼び出すと楽天へは一切リクエストせずエラーを返します）。読み取りツールは常に利用可能です。
+- 既存 RMS ツールの `RMS_MCP_ENABLE_WRITE` とは独立です（相互に影響しません）。
+- ゲートが ON でも、各ツール本来の安全策は維持されます: 明示承認フラグ、非公開ページ固定、重複防止、ウィジェット登録前の Dry-Run 必須、`revisionId` 照合、画像アップロードの重複排除、自動リトライ禁止、作成・更新後の読み取り確認。
+
+---
+
 ## ChatGPT / Claude への接続
 
 1. このサーバを HTTPS で公開（Railway / Render / Fly など）
@@ -93,6 +118,7 @@ npm start
 | `RMS_MCP_OAUTH_PASSCODE` | OAuth 時 | 共有パスコード |
 | `RMS_MCP_API_KEY` | 任意 | 静的 Bearer |
 | `RMS_MCP_OAUTH_STORE_PATH` | 任意 | トークン永続化パス |
+| `RMS_CONTENTS_ENABLE_WRITE` | 任意 | `true` のときだけ Contents 書き込みツールを有効化（既定 OFF） |
 
 **注意:** 現状は **1 プロセス = 1 店舗の RMS 鍵**（サーバ env）です。個人事業主ごとの鍵分離はまだありません。
 
