@@ -152,73 +152,165 @@ describe('unified /mcp tool registration', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('no global env flag blocks confirmed Contents writes (stubbed fetch only)', async () => {
+  const WIDGET_URL = 'https://api.rms.rakuten.co.jp/es/1.0/shop-page/widgets';
+  const parse = (res: RpcResult) => JSON.parse(res.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  const stubRakuten = (
+    calls: { url: string; method?: string; dry: string | null }[],
+    respond: () => Response | Promise<Response>,
+  ) =>
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('127.0.0.1')) return realFetch(input, init);
+      calls.push({ url, method: init?.method, dry: new Headers(init?.headers).get('x-dry-run') });
+      return respond();
+    }) as typeof fetch);
+
+  it('confirmed widget create makes exactly one stubbed POST and no dry-run request', async () => {
     process.env.RMS_SERVICE_SECRET = 'sekret-x';
     process.env.RMS_LICENSE_KEY = 'license-x';
     const widgetId = '44444444-4444-4444-8444-444444444444';
-    const calls: { url: string; dry: string | null }[] = [];
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
     await withServer(async (rpc) => {
-      vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.includes('127.0.0.1')) return realFetch(input, init);
-        const dry = new Headers(init?.headers).get('x-dry-run');
-        calls.push({ url, dry });
-        const body = JSON.parse(String(init?.body)) as { type: string; body: unknown[] };
-        const payload = dry === 'true' ? { type: body.type, body: body.body } : { widgetId };
-        return new Response(JSON.stringify(payload), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }) as typeof fetch);
+      stubRakuten(calls, () => new Response(JSON.stringify({ widgetId }), { status: 200 }));
       const res = await rpc('tools/call', {
         name: 'contents_widget_create',
         arguments: WRITE_CALLS.contents_widget_create,
       });
       expect(res.isError).toBeUndefined();
-      expect(JSON.parse(res.content?.[0]?.text ?? '{}')).toMatchObject({ registered: true, widgetId });
+      expect(parse(res)).toMatchObject({ registered: true, widgetId, rakutenApiCalled: true });
     });
-    // Mandatory validation request first, then exactly one creation request.
-    expect(calls.map((c) => c.dry)).toEqual(['true', 'false']);
-    // Every Rakuten-bound request was intercepted by the stub (no real network).
-    expect(calls.every((c) => c.url === 'https://api.rms.rakuten.co.jp/es/1.0/shop-page/widgets')).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ url: WIDGET_URL, method: 'POST', dry: null });
   });
 
-  it('widget create sends no second request if the validation response already registered it', async () => {
+  it('widget create with a response lacking widgetId errors and is not retried', async () => {
     process.env.RMS_SERVICE_SECRET = 'sekret-x';
     process.env.RMS_LICENSE_KEY = 'license-x';
-    const widgetId = '55555555-5555-4555-8555-555555555555';
-    let count = 0;
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
     await withServer(async (rpc) => {
-      vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (String(input).includes('127.0.0.1')) return realFetch(input, init);
-        count++;
-        const body = JSON.parse(String(init?.body)) as { type: string; body: unknown[] };
-        // Simulates Rakuten ignoring X-Dry-Run.
-        return new Response(JSON.stringify({ type: body.type, body: body.body, widgetId }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }) as typeof fetch);
+      stubRakuten(calls, () => new Response(JSON.stringify({ type: 'TITLE', body: [] }), { status: 200 }));
       const res = await rpc('tools/call', {
         name: 'contents_widget_create',
         arguments: WRITE_CALLS.contents_widget_create,
       });
-      const j = JSON.parse(res.content?.[0]?.text ?? '{}') as Record<string, unknown>;
-      expect(j.registered).toBe(true);
-      expect(j.widgetId).toBe(widgetId);
-      expect(String(j.warning)).toContain('widgetId');
+      expect(res.isError).toBe(true);
+      expect(res.content?.[0]?.text).toContain('再登録は禁止');
     });
-    expect(count).toBe(1);
+    expect(calls).toHaveLength(1);
   });
 
-  it('contents_widget_validate is documented as unverified and not read-only', async () => {
+  it('widget create with an HTTP error is not retried', async () => {
+    process.env.RMS_SERVICE_SECRET = 'sekret-x';
+    process.env.RMS_LICENSE_KEY = 'license-x';
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
+    await withServer(async (rpc) => {
+      stubRakuten(calls, () => new Response(JSON.stringify({ errors: [{ code: 'E' }] }), { status: 500 }));
+      const res = await rpc('tools/call', {
+        name: 'contents_widget_create',
+        arguments: WRITE_CALLS.contents_widget_create,
+      });
+      expect(res.isError).toBe(true);
+      expect(res.content?.[0]?.text).toContain('"autoRetry":false');
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('widget create with an unparseable (ambiguous) response is not retried', async () => {
+    process.env.RMS_SERVICE_SECRET = 'sekret-x';
+    process.env.RMS_LICENSE_KEY = 'license-x';
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
+    await withServer(async (rpc) => {
+      stubRakuten(calls, () => new Response('<html>gateway timeout</html>', { status: 504 }));
+      const res = await rpc('tools/call', {
+        name: 'contents_widget_create',
+        arguments: WRITE_CALLS.contents_widget_create,
+      });
+      expect(res.isError).toBe(true);
+      expect(res.content?.[0]?.text).toContain('再登録は禁止');
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('widget create with a network failure (unknown outcome) is not retried', async () => {
+    process.env.RMS_SERVICE_SECRET = 'sekret-x';
+    process.env.RMS_LICENSE_KEY = 'license-x';
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
+    await withServer(async (rpc) => {
+      stubRakuten(calls, () => {
+        throw new Error('socket hang up');
+      });
+      const res = await rpc('tools/call', {
+        name: 'contents_widget_create',
+        arguments: WRITE_CALLS.contents_widget_create,
+      });
+      expect(res.isError).toBe(true);
+      expect(res.content?.[0]?.text).toContain('自動再登録は禁止');
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('widget create with invalid input makes zero external calls even when confirmed', async () => {
+    process.env.RMS_SERVICE_SECRET = 'sekret-x';
+    process.env.RMS_LICENSE_KEY = 'license-x';
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
+    await withServer(async (rpc) => {
+      stubRakuten(calls, () => new Response('{}', { status: 200 }));
+      const res = await rpc('tools/call', {
+        name: 'contents_widget_create',
+        arguments: { widget: { type: 'TITLE', body: [] }, confirmCreate: true },
+      });
+      expect(res.isError).toBe(true);
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('contents_widget_validate is local-only: valid widget, zero external calls, no credentials needed', async () => {
+    delete process.env.RMS_SERVICE_SECRET;
+    delete process.env.RMS_LICENSE_KEY;
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
+    await withServer(async (rpc) => {
+      stubRakuten(calls, () => new Response('{}', { status: 200 }));
+      const widget = (WRITE_CALLS.contents_widget_create as { widget: unknown }).widget;
+      const res = await rpc('tools/call', { name: 'contents_widget_validate', arguments: { widget } });
+      expect(res.isError).toBeUndefined();
+      const j = parse(res);
+      expect(j).toMatchObject({
+        ok: true,
+        localValidationOnly: true,
+        rakutenApiCalled: false,
+        registered: false,
+        widgetType: 'TITLE',
+      });
+      expect(j.validatedWidget).toMatchObject({ type: 'TITLE' });
+      expect(j).not.toHaveProperty('widgetId');
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('contents_widget_validate rejects invalid widgets locally with zero external calls', async () => {
+    const calls: { url: string; method?: string; dry: string | null }[] = [];
+    await withServer(async (rpc) => {
+      stubRakuten(calls, () => new Response('{}', { status: 200 }));
+      const res = await rpc('tools/call', {
+        name: 'contents_widget_validate',
+        arguments: { widget: { type: 'TITLE', body: [] } },
+      });
+      expect(res.isError).toBe(true);
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('contents_widget_validate is annotated read-only, non-destructive, closed-world', async () => {
     await withServer(async (rpc) => {
       const tool = ((await rpc('tools/list')) as unknown as {
         tools: { name: string; description?: string; annotations?: Record<string, unknown> }[];
       }).tools.find((t) => t.name === 'contents_widget_validate');
-      expect(tool?.annotations?.readOnlyHint).toBe(false);
-      expect(tool?.description).toContain('未確認');
-      expect(tool?.description).not.toContain('一切行わない');
+      expect(tool?.annotations?.readOnlyHint).toBe(true);
+      expect(tool?.annotations?.destructiveHint).toBe(false);
+      expect(tool?.annotations?.openWorldHint).toBe(false);
+      expect(tool?.description).toContain('ローカル');
+      expect(tool?.description).toContain('rakutenApiCalled=false');
+      expect(tool?.description).not.toContain('X-Dry-Run');
     });
   });
 

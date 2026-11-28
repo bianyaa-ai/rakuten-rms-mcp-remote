@@ -290,22 +290,46 @@ function validateWidget(input: Widget): Widget {
 }
 
 // ----------------------------------------
-// Rakuten API request
+// Local-only validation (no network)
 // ----------------------------------------
 
-async function requestWidget(
-  input: Widget,
-  dryRun: boolean
-) {
+function validateWidgetLocally(input: Widget) {
   const widget = validateWidget(input);
+
+  return {
+    ok: true,
+    localValidationOnly: true,
+    rakutenApiCalled: false,
+    registered: false,
+    widgetType: widget.type,
+    validatedWidget: widget,
+    note:
+      "ローカルのスキーマ検証と業務チェックのみ実施しました。" +
+      "楽天APIは呼んでおらず、楽天側の検証結果ではありません。" +
+      "パーツは登録されていません。"
+  };
+}
+
+// ----------------------------------------
+// Rakuten API request (actual creation)
+// ----------------------------------------
+
+/**
+ * Sends exactly ONE POST to Rakuten. There is no preflight, no dry-run
+ * header and no retry: if the outcome is ambiguous the caller must not
+ * resend automatically.
+ */
+async function createWidgetOnce(input: Widget) {
+  // Local validation always runs before any network access.
+  const widget = validateWidget(input);
+  const authorization = getAuthorization();
   const startedAt = Date.now();
 
   console.log(
     "WIDGET diagnostic:",
     JSON.stringify({
       stage: "request_start",
-      widgetType: widget.type,
-      dryRun
+      widgetType: widget.type
     })
   );
 
@@ -316,12 +340,11 @@ async function requestWidget(
       method: "POST",
 
       headers: {
-        Authorization: getAuthorization(),
+        Authorization: authorization,
         "Content-Type":
           "application/json; charset=UTF-8",
         Accept: "application/json",
-        "Accept-Language": "ja-JP",
-        "X-Dry-Run": String(dryRun)
+        "Accept-Language": "ja-JP"
       },
 
       body: JSON.stringify(widget),
@@ -331,9 +354,7 @@ async function requestWidget(
 
   } catch {
     throw new Error(
-      dryRun
-        ? "パーツ事前検証の通信に失敗しました"
-        : "登録結果が不明です。重複防止のため自動再登録は禁止します。"
+      "登録結果が不明です。重複防止のため自動再登録は禁止します。"
     );
   }
 
@@ -345,7 +366,6 @@ async function requestWidget(
     JSON.stringify({
       stage: "request_response",
       widgetType: widget.type,
-      dryRun,
       status: response.status,
       requestId,
       elapsedMs: Date.now() - startedAt
@@ -360,11 +380,11 @@ async function requestWidget(
   } catch {
     throw new Error(
       JSON.stringify({
-        message: dryRun
-          ? "楽天APIのJSON取得に失敗しました"
-          : "登録結果を確認できません。再登録は禁止します。",
+        message:
+          "登録結果を確認できません。再登録は禁止します。",
         httpStatus: response.status,
-        requestId
+        requestId,
+        autoRetry: false
       })
     );
   }
@@ -375,49 +395,10 @@ async function requestWidget(
         message: "楽天パーツAPIエラー",
         httpStatus: response.status,
         requestId,
-        dryRun,
         errors: data?.errors || [],
         autoRetry: false
       })
     );
-  }
-
-  if (dryRun) {
-    if (
-      data?.type !== widget.type ||
-      !Array.isArray(data?.body)
-    ) {
-      throw new Error(
-        "事前検証のレスポンス形式が不正です"
-      );
-    }
-
-    // X-Dry-Run is not verified to be honoured by Rakuten. A widgetId in
-    // the "validation" response means the widget was actually registered.
-    if (typeof data?.widgetId === "string") {
-      return {
-        ok: true,
-        dryRun: true,
-        registered: true,
-        warning:
-          "X-Dry-Run=trueで送信しましたが、レスポンスにwidgetIdが含まれています。" +
-          "楽天側でパーツが登録された可能性があります。再送信しないでください。",
-        widgetType: widget.type,
-        widgetId: data.widgetId,
-        requestId,
-        elapsedMs: Date.now() - startedAt
-      };
-    }
-
-    return {
-      ok: true,
-      dryRun: true,
-      registered: false,
-      widgetType: widget.type,
-      requestId,
-      elapsedMs: Date.now() - startedAt,
-      validatedWidget: data
-    };
   }
 
   if (
@@ -432,7 +413,7 @@ async function requestWidget(
 
   return {
     ok: true,
-    dryRun: false,
+    rakutenApiCalled: true,
     registered: true,
     widgetType: widget.type,
     widgetId: data.widgetId,
@@ -474,21 +455,18 @@ export function registerWidgetTools(
   server: McpServer
 ): void {
 
-  // Sends the widget with an "X-Dry-Run: true" header. That header is NOT
-  // verified to be honoured by the Rakuten API, so this request may reach
-  // Rakuten as a normal request. See the tool description.
+  // Local-only: never touches the network.
 
   server.registerTool(
     "contents_widget_validate",
     {
       description:
-        "楽天コンテンツパーツの事前検証リクエストを送る。" +
-        "入力スキーマをローカルで検証したうえで、X-Dry-Run: trueヘッダー付きで楽天APIへ送信する。" +
-        "注意: このヘッダーが楽天側でDry-Run（検証のみ）として扱われることは、" +
-        "公式ドキュメントまたは実測で未確認。" +
-        "楽天APIに実際にリクエストが届き、無視された場合はパーツが登録される可能性がある。" +
-        "利用前に楽天公式APIの挙動を確認すること。" +
-        "レスポンスにwidgetIdが含まれた場合は登録済みとして警告する。" +
+        "楽天コンテンツパーツの入力をローカルのみで検証する（ローカル検証専用）。" +
+        "Zodスキーマと業務チェックで検証し、正規化したパーツを返す。" +
+        "楽天APIは呼ばず、パーツは登録されない" +
+        "（localValidationOnly=true、rakutenApiCalled=false、registered=false）。" +
+        "楽天側の検証結果ではなく、楽天側で受理される保証もない。" +
+        "実際の登録はcontents_widget_createで行う。" +
         "TITLE、TEXT、LARGE_IMAGE、SMALL_IMAGE、" +
         "ITEM_LIST、HYPERLINK、VIDEOに対応。",
 
@@ -496,19 +474,18 @@ export function registerWidgetTools(
         widget: widgetSchema
       }),
 
-
       annotations: {
-        readOnlyHint: false,
+        readOnlyHint: true,
         destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true
+        idempotentHint: true,
+        openWorldHint: false
       }
     },
 
     async ({ widget }) => {
       try {
         return successResult(
-          await requestWidget(widget, true)
+          validateWidgetLocally(widget)
         );
       } catch (error) {
         return errorResult(error);
@@ -522,12 +499,14 @@ export function registerWidgetTools(
     "contents_widget_create",
     {
       description:
-        "楽天コンテンツ用パーツを新規登録する。" +
-        "登録前にcontents_widget_validateと同じ事前検証リクエスト（X-Dry-Run: true、楽天側の挙動は未確認）を必ず送る。" +
-        "事前検証のレスポンスにwidgetIdが含まれた場合は登録済みとみなし、二重登録を避けるため本登録は送らない。" +
+        "楽天コンテンツ用パーツを新規登録する（実際に楽天APIへ書き込む）。" +
+        "confirmCreate=trueかつローカル検証成功の場合のみ、楽天APIへPOSTをちょうど1回送る。" +
+        "事前のDry-Runや検証用の通信は行わない。" +
+        "confirmCreate未指定・falseの場合は楽天APIを呼ばずに拒否する。" +
         "ユーザーの明示承認が必要。" +
         "既存パーツの編集・削除・公開は行わない。" +
-        "登録結果が不明な場合は自動再登録しない。",
+        "失敗・結果不明の場合も自動再登録（再送）はしない。" +
+        "登録前の確認にはcontents_widget_validate（ローカル検証専用）を使える。",
 
       inputSchema: z.object({
         widget: widgetSchema,
@@ -538,7 +517,6 @@ export function registerWidgetTools(
             "実際の新規登録についてユーザー承認済みの場合のみtrue"
           )
       }),
-
 
       annotations: {
         readOnlyHint: false,
@@ -560,28 +538,10 @@ export function registerWidgetTools(
           );
         }
 
-        // Mandatory validation before creation.
-        const validation =
-          await requestWidget(widget, true);
-
-        if (!validation.ok) {
-          throw new Error(
-            "事前検証に失敗したため登録を中止しました"
-          );
-        }
-
-        // The validation request itself registered the widget (the
-        // X-Dry-Run header was not honoured). Never send a second
-        // request: that would create a duplicate.
-        if ((validation as { registered?: boolean }).registered) {
-          return successResult(validation);
-        }
-
-        // No automatic retry.
-        const result =
-          await requestWidget(widget, false);
-
-        return successResult(result);
+        // Exactly one POST; never retried.
+        return successResult(
+          await createWidgetOnce(widget)
+        );
 
       } catch (error) {
         return errorResult(error);
